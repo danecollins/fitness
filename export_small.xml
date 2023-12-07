@@ -161,6 +161,12 @@
 <Record type="HKQuantityTypeIdentifierAppleExerciseTime" sourceName="Dane Watch 2" sourceVersion="4.0" device="&lt;&lt;HKDevice: 0x2821f83c0&gt;, name:Apple Watch, manufacturer:Apple, model:Watch, hardware:Watch2,4, software:4.0&gt;" unit="min" creationDate="2017-11-01 15:57:48 -0700" startDate="2017-11-01 15:54:56 -0700" endDate="2017-11-01 15:55:56 -0700" value="1"/>
 
 <Record type="HKQuantityTypeIdentifierHeartRateVariabilitySDNN" sourceName="Dane Watch 2" sourceVersion="4.0" device="&lt;&lt;HKDevice: 0x2823c2350&gt;, name:Apple Watch, manufacturer:Apple, model:Watch, hardware:Watch2,4, software:4.0&gt;" unit="ms" creationDate="2017-11-03 09:29:12 -0700" startDate="2017-11-03 09:28:11 -0700" endDate="2017-11-03 09:29:12 -0700" value="17.892">
+ 
+ <Record type="HKQuantityTypeIdentifierRespiratoryRate" sourceName="Dane watch 5" sourceVersion="9.3" device="&lt;&lt;HKDevice: 0x280ade620&gt;, name:Apple Watch, manufacturer:Apple Inc., model:Watch, hardware:Watch5,4, software:9.3&gt;" unit="count/min" creationDate="2023-02-09 02:40:34 -0800" startDate="2023-02-09 02:28:04 -0800" endDate="2023-02-09 02:28:04 -0800" value="15"/>
+
+  <Record type="HKQuantityTypeIdentifierWalkingStepLength" sourceName="Dane phone 12" sourceVersion="16.4.1" device="&lt;&lt;HKDevice: 0x280a54b90&gt;, name:iPhone, manufacturer:Apple Inc., model:iPhone, hardware:iPhone14,2, software:16.4.1&gt;" unit="in" creationDate="2023-05-30 12:53:25 -0800" startDate="2023-05-30 12:23:57 -0800" endDate="2023-05-30 12:24:09 -0800" value="36.6142"/>
+  
+   
   <HeartRateVariabilityMetadataList>
    <InstantaneousBeatsPerMinute bpm="64" time="9:28:34.99 AM"/>
    <InstantaneousBeatsPerMinute bpm="66" time="9:28:36.84 AM"/>

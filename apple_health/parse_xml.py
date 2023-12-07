@@ -1,6 +1,8 @@
 import xml.etree.ElementTree as ET
 import json
 import re
+import argparse
+import os
 import pdb
 
 ''' This parses the XML data produced by the Apple Health App on the iPhone and converts it to JSON format.
@@ -20,10 +22,9 @@ import pdb
       * the conversion summary should include a date range that the records cover
 '''
 
-# Define the XML file path and JSON file path
-xml_file_path = 'export_small.xml'
-
 HKMetadataKeyHeartRateMotionContext = {'0': 'notSet', '1': 'sedentary', '2': 'active', '3': 'ECG'}
+FileNumber = 0
+TotalFiles = 19
 
 
 def replace_unicode_chars(text):
@@ -38,14 +39,13 @@ def replace_unicode_chars(text):
 
 
 def device_string_to_json(string):
-    regex = r'([\w]+):([\w\s\d.]+)'
+    regex = r'(\w+):(.*?)(?=, \w+:|$)'
 
     if (not string) or string == '':
-        pdb.set_trace()
         return None
 
     # Find all key-value pairs using regex
-    matches = re.findall(regex, string)
+    matches = re.findall(regex, string.strip('&gt;'))  # because of the comma in the hardware field this is not clean
 
     # Create a dictionary with the key-value pairs
     data = {}
@@ -59,6 +59,23 @@ def device_string_to_json(string):
     return data
 
 
+def append_device_string(string, jdata):
+    if string:
+        for k, v in device_string_to_json(string).items():
+            jdata[k] = v
+    # return not necessary as jdata is passed by reference but this is done for clarity
+    return jdata
+
+
+def get_std_props(record_elem):
+    source = replace_unicode_chars(record_elem.get('sourceName'))
+    device = record_elem.get('device')
+    creation_date = convert_date_format(record_elem.get('creationDate'))
+    start_date = convert_date_format(record_elem.get('startDate'))
+    end_date = convert_date_format(record_elem.get('endDate'))
+    return (source, device, creation_date, start_date, end_date)
+
+
 def convert_date_format(s):
     ''' make it easy to convert dates to other formats easily in the future
     '''
@@ -66,10 +83,13 @@ def convert_date_format(s):
 
 
 def write_data_to_file(file_path, records):
-        # Write the extracted data to a JSON file
+    global FileNumber
+    # Write the extracted data to a JSON file
     with open(file_path, 'w') as json_file:
         json.dump(records, json_file, indent=4)
-    print(f"Extraction completed. {len(records)} records written to: " + file_path)
+    
+    FileNumber += 1
+    print(f"{FileNumber}/{TotalFiles} Extraction completed. {len(records)} records written to: " + file_path)
 
 
 def collect_hr_records(root):
@@ -77,12 +97,8 @@ def collect_hr_records(root):
     records = []    # Loop through each 'Record' element in the XML file
     for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierHeartRate']"):
         # Extract the field values using ElementTree's 'get' method
-        source_name = replace_unicode_chars(record_elem.get('sourceName'))
-        device = record_elem.get('device')
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
         unit = record_elem.get('unit')
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
         value = record_elem.get('value')
 
         # Extract the MetadataEntry value with key HKMetadataKeyHeartRateMotionContext
@@ -102,7 +118,7 @@ def collect_hr_records(root):
 
         # Create a dictionary to store the extracted data for this record
         record_data = {
-            'sourceName': source_name,
+            'sourceName': source,
             'device': device,
             'creationDate': creation_date,
             'startDate': start_date,
@@ -112,9 +128,11 @@ def collect_hr_records(root):
             'context': HKMetadataKeyHeartRateMotionContext.get(metadata_value, 'notSet')
         }
 
+        # add the device data
+        record_data = append_device_string(device, record_data)
         # Append the record data to the list
         records.append(record_data)
-
+        
     write_data_to_file(json_file_path, records)
 
 
@@ -123,21 +141,20 @@ def collect_resting_hr_records(root):
     records = []    # Loop through each 'Record' element in the XML file
     for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierRestingHeartRate']"):
         # Extract the field values using ElementTree's 'get' method
-        source_name = replace_unicode_chars(record_elem.get('sourceName'))
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
         value = record_elem.get('value')
 
         # Create a dictionary to store the extracted data for this record
         record_data = {
-            'sourceName': source_name,
+            'sourceName': source,
             'creationDate': creation_date,
             'startDate': start_date,
             'endDate': end_date,
             'bpm': int(value),
         }
 
+        # add the device data
+        record_data = append_device_string(device, record_data)
         # Append the record data to the list
         records.append(record_data)
 
@@ -145,34 +162,38 @@ def collect_resting_hr_records(root):
 
 
 def collect_blood_pressure_records(root):
+    '''
+        For devices like Kardia, the creation data is the data the records were transferred
+        to apple health, not the date the blood pressure was taken.
+    '''
     json_file_path = './blood_pressure_data.json'
     records = {}    # dict by creation_date so we can match up both pressure types
+
     for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierBloodPressureSystolic']") + \
                        root.findall(".//Record[@type='HKQuantityTypeIdentifierBloodPressureDiastolic']"):
         # Extract the field values using ElementTree's 'get' method
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
         rec_type = record_elem.get('type')
-        source_name = record_elem.get('sourceName')
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
         value = record_elem.get('value')
 
-        # we need to collect up the systolic and diastolic pressures into one record by matching up creationDate
+        # we need to collect up the systolic and diastolic pressures into one record by matching up startDate
         if rec_type == 'HKQuantityTypeIdentifierBloodPressureSystolic':
             k = 'systolic'
         else:
             k = 'diastolic'
-        if creation_date in records:
-            records[creation_date][k] = int(value)
+        if start_date in records:
+            records[start_date][k] = int(value)
         else:
-            records[creation_date] = {
-                'sourceName': source_name,
+            records[start_date] = {
+                'sourceName': source,
                 'creationDate': creation_date,
                 'startDate': start_date,
                 'endDate': end_date,               
             }
-            records[creation_date][k] = int(value)
-
+            records[start_date][k] = int(value)
+        
+        # add the device data
+        records[start_date] = append_device_string(device, records[start_date])
 
     # now convert the dict to a list
     records = list(records.values())
@@ -185,16 +206,12 @@ def collect_step_records(root):
     records = []    # Loop through each 'Record' element in the XML file
     for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierStepCount']"):
         # Extract the field values using ElementTree's 'get' method
-        source_name = replace_unicode_chars(record_elem.get('sourceName'))
-        device = record_elem.get('device')
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
         value = record_elem.get('value')
 
         # Create a dictionary to store the extracted data for this record
         record_data = {
-            'sourceName': source_name,
+            'sourceName': source,
             'creationDate': creation_date,
             'startDate': start_date,
             'endDate': end_date,
@@ -211,17 +228,13 @@ def collect_step_records(root):
         else:
             record_data['device_type'] = 'phone'
 
-        # add the device data 
-        if device:
-            for k, v in device_string_to_json(device).items():
-                record_data[k] = v
+        # add the device data
+        record_data = append_device_string(device, record_data)
         # Append the record data to the list
         records.append(record_data)
 
     # Write the extracted data to a JSON file
-    with open(json_file_path, 'w') as json_file:
-        json.dump(records, json_file, indent=4)
-    print(f"Extraction completed. {len(records)} records written to: " + json_file_path)
+    write_data_to_file(json_file_path, records)
 
 
 def collect_distance_records(root):
@@ -233,16 +246,12 @@ def collect_distance_records(root):
     records = []    # Loop through each 'Record' element in the XML file
     for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierDistanceWalkingRunning']"):
         # Extract the field values using ElementTree's 'get' method
-        source_name = replace_unicode_chars(record_elem.get('sourceName'))
-        device = record_elem.get('device')
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
         value = record_elem.get('value')
 
         # Create a dictionary to store the extracted data for this record
         record_data = {
-            'sourceName': source_name,
+            'sourceName': source,
             'creationDate': creation_date,
             'startDate': start_date,
             'endDate': end_date,
@@ -259,17 +268,13 @@ def collect_distance_records(root):
         else:
             record_data['device_type'] = 'phone'
 
-        # add the device data 
-        if device:
-            for k, v in device_string_to_json(device).items():
-                record_data[k] = v
+        # add the device data
+        record_data = append_device_string(device, record_data)
         # Append the record data to the list
         records.append(record_data)
 
     # Write the extracted data to a JSON file
-    with open(json_file_path, 'w') as json_file:
-        json.dump(records, json_file, indent=4)
-    print(f"Extraction completed. {len(records)} records written to: " + json_file_path)
+    write_data_to_file(json_file_path, records)
 
 
 def collect_vo2max_records(root):
@@ -279,11 +284,8 @@ def collect_vo2max_records(root):
     records = []    # Loop through each 'Record' element in the XML file
     for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierVO2Max']"):
         # Extract the field values using ElementTree's 'get' method
-        source_name = replace_unicode_chars(record_elem.get('sourceName'))
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
         unit = record_elem.get('unit')
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
         value = record_elem.get('value')
 
         # Extract the MetadataEntry value with key HKMetadataKeyHeartRateMotionContext
@@ -293,11 +295,9 @@ def collect_vo2max_records(root):
         else:
             metadata_value = None
 
-
-
         # Create a dictionary to store the extracted data for this record
         record_data = {
-            'sourceName': source_name,
+            'sourceName': source,
             'creationDate': creation_date,
             'startDate': start_date,
             'endDate': end_date,
@@ -305,6 +305,8 @@ def collect_vo2max_records(root):
             'context': HKVO2MaxTestType.get(metadata_value, 'notSet')
         }
 
+        # add the device data
+        record_data = append_device_string(device, record_data)
         # Append the record data to the list
         records.append(record_data)
 
@@ -316,16 +318,12 @@ def collect_flights_records(root):
     records = []    # Loop through each 'Record' element in the XML file
     for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierFlightsClimbed']"):
         # Extract the field values using ElementTree's 'get' method
-        source_name = replace_unicode_chars(record_elem.get('sourceName'))
-        device = record_elem.get('device')
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
         value = record_elem.get('value')
 
         # Create a dictionary to store the extracted data for this record
         record_data = {
-            'sourceName': source_name,
+            'sourceName': source,
             'creationDate': creation_date,
             'startDate': start_date,
             'endDate': end_date,
@@ -342,38 +340,25 @@ def collect_flights_records(root):
         else:
             record_data['device_type'] = 'phone'
 
-        # add the device data 
-        if device:
-            for k, v in device_string_to_json(device).items():
-                record_data[k] = v
+        # add the device data
+        record_data = append_device_string(device, record_data)
         # Append the record data to the list
         records.append(record_data)
 
-    # Write the extracted data to a JSON file
-    with open(json_file_path, 'w') as json_file:
-        json.dump(records, json_file, indent=4)
-    print(f"Extraction completed. {len(records)} records written to: " + json_file_path)
+    write_data_to_file(json_file_path, records)
 
 
 def collect_cycling_records(root):
-    ''' older apple watch records do not have a device string so I've chosen not to capture
-        that data as having it only for some records does not make sense.  If you only have
-        new records you can uncomment that section below
-    '''
     json_file_path = './cycling_data.json'
     records = []    # Loop through each 'Record' element in the XML file
     for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierDistanceCycling']"):
         # Extract the field values using ElementTree's 'get' method
-        source_name = replace_unicode_chars(record_elem.get('sourceName'))
-        # device = record_elem.get('device')
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
         value = record_elem.get('value')
 
         # Create a dictionary to store the extracted data for this record
         record_data = {
-            'sourceName': source_name,
+            'sourceName': source,
             'creationDate': creation_date,
             'startDate': start_date,
             'endDate': end_date,
@@ -381,15 +366,11 @@ def collect_cycling_records(root):
         }
 
         # add the device data
-        #for k, v in device_string_to_json(device).items():
-        #    record_data[k] = v
+        record_data = append_device_string(device, record_data)
         # Append the record data to the list
-        #records.append(record_data)
+        records.append(record_data)
 
-    # Write the extracted data to a JSON file
-    with open(json_file_path, 'w') as json_file:
-        json.dump(records, json_file, indent=4)
-    print(f"Extraction completed. {len(records)} records written to: " + json_file_path)
+    write_data_to_file(json_file_path, records)
 
 
 def collect_audio_exposure_records(root):
@@ -401,33 +382,24 @@ def collect_audio_exposure_records(root):
     records = []    # Loop through each 'Record' element in the XML file
     for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierEnvironmentalAudioExposure']"):
         # Extract the field values using ElementTree's 'get' method
-        source_name = replace_unicode_chars(record_elem.get('sourceName'))
-        device = record_elem.get('device')
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
         value = record_elem.get('value')
 
         # Create a dictionary to store the extracted data for this record
         record_data = {
-            'sourceName': source_name,
+            'sourceName': source,
             'creationDate': creation_date,
             'startDate': start_date,
             'endDate': end_date,
             'dbASPL': float(value),
         }
 
-        # add the device data 
-        if device:
-            for k, v in device_string_to_json(device).items():
-                record_data[k] = v
+        # add the device data
+        record_data = append_device_string(device, record_data)
         # Append the record data to the list
         records.append(record_data)
 
-    # Write the extracted data to a JSON file
-    with open(json_file_path, 'w') as json_file:
-        json.dump(records, json_file, indent=4)
-    print(f"Extraction completed. {len(records)} records written to: " + json_file_path)
+    write_data_to_file(json_file_path, records)
 
 
 def collect_stand_records(root):
@@ -435,22 +407,21 @@ def collect_stand_records(root):
     records = []    # Loop through each 'Record' element in the XML file
     for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierAppleStandTime']"):
         # Extract the field values using ElementTree's 'get' method
-        source_name = replace_unicode_chars(record_elem.get('sourceName'))
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
         unit = record_elem.get('unit')
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
         value = int(record_elem.get('value'))
 
         # Create a dictionary to store the extracted data for this record
         record_data = {
-            'sourceName': source_name,
+            'sourceName': source,
             'creationDate': creation_date,
             'startDate': start_date,
             'endDate': end_date,
             'stand_min': value,
         }
 
+        # add the device data
+        record_data = append_device_string(device, record_data)
         # Append the record data to the list
         records.append(record_data)
 
@@ -466,15 +437,9 @@ def collect_hr_variability_records(root):
     records = []    # Loop through each 'Record' element in the XML file
     for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierHeartRateVariabilitySDNN']"):
         # Extract the field values using ElementTree's 'get' method
-        source_name = replace_unicode_chars(record_elem.get('sourceName'))
-        device = record_elem.get('device')
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
         unit = record_elem.get('unit')
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
         value = record_elem.get('value')
-
-
 
         # Extract the MetadataEntry value with key HKMetadataKeyHeartRateMotionContext
         beats = []
@@ -484,7 +449,7 @@ def collect_hr_variability_records(root):
 
         # Create a dictionary to store the extracted data for this record
         record_data = {
-            'sourceName': source_name,
+            'sourceName': source,
             'creationDate': creation_date,
             'startDate': start_date,
             'endDate': end_date,
@@ -493,10 +458,8 @@ def collect_hr_variability_records(root):
             'bpm_max': max(beats)
         }
 
-        # add the device data 
-        if device:
-            for k, v in device_string_to_json(device).items():
-                record_data[k] = v
+        # add the device data
+        record_data = append_device_string(device, record_data)
         # Append the record data to the list
         records.append(record_data)
 
@@ -508,22 +471,21 @@ def collect_walking_hr_records(root):
     records = []    # Loop through each 'Record' element in the XML file
     for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierWalkingHeartRateAverage']"):
         # Extract the field values using ElementTree's 'get' method
-        source_name = replace_unicode_chars(record_elem.get('sourceName'))
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
         unit = record_elem.get('unit')
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
         value = record_elem.get('value')
 
         # Create a dictionary to store the extracted data for this record
         record_data = {
-            'sourceName': source_name,
+            'sourceName': source,
             'creationDate': creation_date,
             'startDate': start_date,
             'endDate': end_date,
             'walking_hr_avg': float(value),
         }
 
+        # add the device data
+        record_data = append_device_string(device, record_data)
         # Append the record data to the list
         records.append(record_data)
 
@@ -535,50 +497,12 @@ def collect_energy_resting_records(root):
     records = []    # Loop through each 'Record' element in the XML file
     for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierBasalEnergyBurned']"):
         # Extract the field values using ElementTree's 'get' method
-        source_name = replace_unicode_chars(record_elem.get('sourceName'))
-        device = record_elem.get('device')
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
         value = record_elem.get('value')
 
         # Create a dictionary to store the extracted data for this record
         record_data = {
-            'sourceName': source_name,
-            'creationDate': creation_date,
-            'startDate': start_date,
-            'endDate': end_date,
-            'kcal': float(value),
-        }
-
-        # add the device data 
-        if device:
-            for k, v in device_string_to_json(device).items():
-                record_data[k] = v
-        # Append the record data to the list
-        records.append(record_data)
-
-    # Write the extracted data to a JSON file
-    with open(json_file_path, 'w') as json_file:
-        json.dump(records, json_file, indent=4)
-    print(f"Extraction completed. {len(records)} records written to: " + json_file_path)
-
-
-def collect_energy_active_records(root):
-    json_file_path = './energy_active_data.json'
-    records = []    # Loop through each 'Record' element in the XML file
-    for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierActiveEnergyBurned']"):
-        # Extract the field values using ElementTree's 'get' method
-        source_name = replace_unicode_chars(record_elem.get('sourceName'))
-        device = record_elem.get('device')
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
-        value = record_elem.get('value')
-
-        # Create a dictionary to store the extracted data for this record
-        record_data = {
-            'sourceName': source_name,
+            'sourceName': source,
             'creationDate': creation_date,
             'startDate': start_date,
             'endDate': end_date,
@@ -586,16 +510,37 @@ def collect_energy_active_records(root):
         }
 
         # add the device data
-        if device:
-            for k, v in device_string_to_json(device).items():
-                record_data[k] = v
+        record_data = append_device_string(device, record_data)
         # Append the record data to the list
         records.append(record_data)
 
-    # Write the extracted data to a JSON file
-    with open(json_file_path, 'w') as json_file:
-        json.dump(records, json_file, indent=4)
-    print(f"Extraction completed. {len(records)} records written to: " + json_file_path)
+    write_data_to_file(json_file_path, records)
+
+
+def collect_energy_active_records(root):
+    json_file_path = './energy_active_data.json'
+    records = []    # Loop through each 'Record' element in the XML file
+    for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierActiveEnergyBurned']"):
+        # Extract the field values using ElementTree's 'get' method
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
+        value = record_elem.get('value')
+
+        # Create a dictionary to store the extracted data for this record
+        record_data = {
+            'sourceName': source,
+            'creationDate': creation_date,
+            'startDate': start_date,
+            'endDate': end_date,
+            'kcal': float(value),
+        }
+
+        # add the device data
+        # add the device data
+        record_data = append_device_string(device, record_data)
+        # Append the record data to the list
+        records.append(record_data)
+
+    write_data_to_file(json_file_path, records)
 
 
 def collect_exercise_time_records(root):
@@ -603,51 +548,178 @@ def collect_exercise_time_records(root):
     records = []    # Loop through each 'Record' element in the XML file
     for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierAppleExerciseTime']"):
         # Extract the field values using ElementTree's 'get' method
-        source_name = replace_unicode_chars(record_elem.get('sourceName'))
-        device = record_elem.get('device')
-        creation_date = convert_date_format(record_elem.get('creationDate'))
-        start_date = convert_date_format(record_elem.get('startDate'))
-        end_date = convert_date_format(record_elem.get('endDate'))
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
         value = record_elem.get('value')
 
         # Create a dictionary to store the extracted data for this record
         record_data = {
-            'sourceName': source_name,
+            'sourceName': source,
             'creationDate': creation_date,
             'startDate': start_date,
             'endDate': end_date,
             'exercise_min': int(value),
         }
 
-        # add the device data 
-        if device:
-            for k, v in device_string_to_json(device).items():
-                record_data[k] = v
+        # add the device data
+        record_data = append_device_string(device, record_data)
         # Append the record data to the list
         records.append(record_data)
 
-    # Write the extracted data to a JSON file
-    with open(json_file_path, 'w') as json_file:
-        json.dump(records, json_file, indent=4)
-    print(f"Extraction completed. {len(records)} records written to: " + json_file_path)
+    write_data_to_file(json_file_path, records)
 
+
+def collect_vo2max_records(root):
+    json_file_path = './vo2max_data.json'
+    HKVO2MaxTestType = {'1': 'maxExercise', '2': 'predictionSubMaxExercise', '3':'predictionNonExercise'}
+    
+    records = []    # Loop through each 'Record' element in the XML file
+    for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierVO2Max']"):
+        # Extract the field values using ElementTree's 'get' method
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
+        unit = record_elem.get('unit')
+        value = record_elem.get('value')
+
+        # Extract the MetadataEntry value with key HKMetadataKeyHeartRateMotionContext
+        metadata_entry_elem = record_elem.find(".//MetadataEntry[@key='HKVO2MaxTestType']")
+        if metadata_entry_elem is not None:
+            metadata_value = metadata_entry_elem.get('value')
+        else:
+            metadata_value = None
+
+        # Create a dictionary to store the extracted data for this record
+        record_data = {
+            'sourceName': source,
+            'creationDate': creation_date,
+            'startDate': start_date,
+            'endDate': end_date,
+            'vo2max': float(value),
+            'context': HKVO2MaxTestType.get(metadata_value, 'notSet')
+        }
+
+        # add the device data
+        record_data = append_device_string(device, record_data)
+        # Append the record data to the list
+        records.append(record_data)
+
+    write_data_to_file(json_file_path, records)
+
+
+def collect_respiration_records(root):
+    # note respiration data is only available during collection of sleep data
+    json_file_path = './respiration_data.json'
+    
+    records = []    # Loop through each 'Record' element in the XML file
+    for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierRespiratoryRate']"):
+        # Extract the field values using ElementTree's 'get' method
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
+        unit = record_elem.get('unit')
+        value = record_elem.get('value')
+
+        # Create a dictionary to store the extracted data for this record
+        record_data = {
+            'sourceName': source,
+            'creationDate': creation_date,
+            'startDate': start_date,
+            'endDate': end_date,
+            'respirationRate': float(value)
+        }
+
+        # add the device data
+        record_data = append_device_string(device, record_data)
+        # Append the record data to the list
+        records.append(record_data)
+
+    write_data_to_file(json_file_path, records)
+    
+def collect_step_length_records(root):
+    # note respiration data is only available during collection of sleep data
+    json_file_path = './step_length_data.json'
+    
+    records = []    # Loop through each 'Record' element in the XML file
+    for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierWalkingStepLength']"):
+        # Extract the field values using ElementTree's 'get' method
+
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
+        unit = record_elem.get('unit')
+        value = record_elem.get('value')
+
+        # Create a dictionary to store the extracted data for this record
+        record_data = {
+            'sourceName': source,
+            'creationDate': creation_date,
+            'startDate': start_date,
+            'endDate': end_date,
+            'stepLength': float(value)
+        }
+
+        # add the device data
+        record_data = append_device_string(device, record_data)
+        # Append the record data to the list
+        records.append(record_data)
+
+    write_data_to_file(json_file_path, records)
+
+
+def collect_double_support_records(root):
+    # note respiration data is only available during collection of sleep data
+    json_file_path = './double_support_data.json'
+    
+    records = []    # Loop through each 'Record' element in the XML file
+    for record_elem in root.findall(".//Record[@type='HKQuantityTypeIdentifierWalkingDoubleSupportPercentage']"):
+        # Extract the field values using ElementTree's 'get' method
+        (source, device, creation_date, start_date, end_date) = get_std_props(record_elem)
+        unit = record_elem.get('unit')
+        value = record_elem.get('value')
+
+        # Create a dictionary to store the extracted data for this record
+        record_data = {
+            'sourceName': source,
+            'creationDate': creation_date,
+            'startDate': start_date,
+            'endDate': end_date,
+            'doubleSupportPercentage': float(value) * 100
+        }
+
+        # add the device data
+        record_data = append_device_string(device, record_data)
+        # Append the record data to the list
+        records.append(record_data)
+
+    write_data_to_file(json_file_path, records)
 
 # Open the XML file and create an ElementTree object
-with open(xml_file_path, 'r') as xml_file:
-    tree = ET.parse(xml_file)
-    root = tree.getroot()
+def process_file(xml_file_path):
+    with open(xml_file_path, 'r') as xml_file:
+        tree = ET.parse(xml_file)
+        root = tree.getroot()
 
-    collect_hr_records(root)
-    collect_resting_hr_records(root)
-    collect_blood_pressure_records(root)
-    collect_step_records(root)
-    collect_distance_records(root)
-    collect_vo2max_records(root)
-    collect_flights_records(root)
-    collect_cycling_records(root)
-    collect_audio_exposure_records(root)
-    collect_stand_records(root)
-    collect_hr_variability_records(root)
-    collect_walking_hr_records(root)
-    collect_energy_resting_records(root)
-    collect_energy_active_records(root)
+        collect_hr_records(root)
+        collect_resting_hr_records(root)
+        collect_blood_pressure_records(root)
+        collect_step_records(root)
+        collect_distance_records(root)
+        collect_vo2max_records(root)
+        collect_flights_records(root)
+        collect_cycling_records(root)
+        collect_audio_exposure_records(root)
+        collect_stand_records(root)
+        collect_hr_variability_records(root)
+        collect_walking_hr_records(root)
+        collect_energy_resting_records(root)
+        collect_energy_active_records(root)
+        collect_exercise_time_records(root)
+        collect_vo2max_records(root)
+        collect_respiration_records(root)
+        collect_step_length_records(root)
+        collect_double_support_records(root)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='transform export.xml into data files')
+    parser.add_argument("filename", type=str, help='pathname to the export.xml file')
+    args = parser.parse_args()
+
+    filename = args.filename
+    if os.path.exists(filename):
+        process_file(filename)
+    else:
+        print(f'The file "{filename}" does not exist')
